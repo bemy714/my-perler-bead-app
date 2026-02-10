@@ -4,12 +4,12 @@ import pandas as pd
 import numpy as np
 import io
 import math
+from fpdf import FPDF
 from colors import BEAD_LIBRARY
 
-# --- 1. 核心邏輯優化 ---
+# --- 1. 核心邏輯 ---
 
 def get_closest_bead(pixel_rgb, active_palette):
-    """從目前選用的色盤中尋找最接近色"""
     pr, pg, pb = pixel_rgb
     min_dist = float('inf')
     best_bead = active_palette[0]
@@ -20,119 +20,63 @@ def get_closest_bead(pixel_rgb, active_palette):
             best_bead = bead
     return best_bead
 
-def process_image(image, width_beads, use_dithering, brightness, contrast, saturation, max_colors):
-    # 影像增強處理
-    image = image.convert("RGB")
-    image = ImageEnhance.Brightness(image).enhance(brightness)
-    image = ImageEnhance.Contrast(image).enhance(contrast)
-    image = ImageEnhance.Color(image).enhance(saturation)
+def create_pdf(output_img, bead_w, h_beads, bead_size_mm):
+    """生成 1:1 比例的 PDF"""
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.text(10, 10, f"Perler Bead Pattern - {bead_w}x{h_beads} beads")
     
-    # 縮放
-    w_percent = (width_beads / float(image.size[0]))
-    h_beads = int((float(image.size[1]) * float(w_percent)))
-    img_small = image.resize((width_beads, h_beads), Image.Resampling.LANCZOS)
+    # 計算 PDF 中的尺寸 (mm)
+    img_w_mm = bead_w * bead_size_mm
+    img_h_mm = h_beads * bead_size_mm
     
-    # 智能限色邏輯：先縮減到 max_colors 種主要顏色
-    img_temp = img_small.quantize(colors=max_colors).convert("RGB")
+    # 將 PIL Image 轉為 Bytes 給 PDF
+    img_byte_arr = io.BytesIO()
+    output_img.save(img_byte_arr, format='PNG')
     
-    # 建立 PIL 調色盤（符合 Pillow 256 色限制）
-    # 我們從 311 色中選取最匹配 img_temp 的前 256 色
-    unique_pixels = list(set(img_temp.getdata()))
-    dynamic_palette = []
-    for p in unique_pixels[:255]: # 預留空間
-        dynamic_palette.append(get_closest_bead(p, BEAD_LIBRARY))
-    
-    pal_data = []
-    for b in dynamic_palette: pal_data.extend([b['r'], b['g'], b['b']])
-    pal_data.extend([0] * (768 - len(pal_data)))
-    
-    pal_img = Image.new("P", (1, 1))
-    pal_img.putpalette(pal_data)
-    
-    dither = Image.Dither.FLOYDSTEINBERG if use_dithering else Image.Dither.NONE
-    img_quant = img_small.quantize(palette=pal_img, dither=dither).convert("RGB")
-    
-    return img_quant, h_beads
+    # 插入圖片 (維持 1:1 物理尺寸)
+    pdf.image(img_byte_arr, x=10, y=15, w=img_w_mm)
+    return pdf.output()
 
 # --- 2. 介面設計 ---
 
-st.set_page_config(page_title="拼豆大師 Pro v2.0", layout="wide")
-st.title("💎 拼豆大師 Pro v2.0 - 專業製圖工作站")
+st.set_page_config(page_title="拼豆大師 Ultimate", layout="wide")
+st.title("🏆 拼豆大師 Ultimate - 終極製圖工作站")
 
 with st.sidebar:
+    st.header("📦 我的收納盒 (色系篩選)")
+    all_series = sorted(list(set([b['code'][0] for b in BEAD_LIBRARY])))
+    selected_series = st.multiselect("勾選你擁有的色系", all_series, default=all_series)
+    
     st.header("📸 影像前處理")
-    brightness = st.slider("亮度 (Brightness)", 0.5, 2.0, 1.0)
-    contrast = st.slider("對比 (Contrast)", 0.5, 2.0, 1.1)
-    saturation = st.slider("飽和度 (Saturation)", 0.0, 2.0, 1.2)
+    brightness = st.slider("亮度", 0.5, 2.0, 1.0)
+    contrast = st.slider("對比", 0.5, 2.0, 1.2)
     
-    st.header("🧱 拼豆核心設定")
-    file = st.file_uploader("上傳原始圖片", type=["png", "jpg", "jpeg"])
-    bead_w = st.slider("作品寬度 (顆數)", 10, 150, 29)
-    max_colors = st.slider("限制總用色數", 2, 64, 20)
-    dither_on = st.checkbox("開啟抖動演算 (漸層細節)", value=True)
-    ignore_white = st.checkbox("自動忽略純白背景 (不標註)", value=True)
+    st.header("📏 規格設定")
+    bead_type = st.radio("豆子直徑", ["5.0mm (標準)", "2.6mm (迷你)"])
+    bead_size = 5.0 if "5.0mm" in bead_type else 2.6
     
-    st.header("🔍 顯示優化")
-    show_symbols = st.checkbox("顯示色號標籤", value=True)
-    board_line = st.checkbox("顯示 29x29 拼板紅線", value=True)
-    focus_color = st.selectbox("🎯 單色聚焦模式", ["全部顯示"] + sorted([b['code'] for b in BEAD_LIBRARY]))
-
-if file:
-    input_img = Image.open(file)
-    processed_small, h_beads = process_image(input_img, bead_w, dither_on, brightness, contrast, saturation, max_colors)
+    file = st.file_uploader("上傳圖片", type=["png", "jpg", "jpeg"])
+    bead_w = st.slider("橫向顆數", 10, 150, 29)
+    max_colors = st.slider("限制總用色數", 2, 64, 25)
     
-    real_w, real_h = bead_w * 0.5, h_beads * 0.5
-    st.info(f"📏 預估成品：{real_w} x {real_h} cm | 用色數：{max_colors}")
+    st.header("🎨 顯示調整")
+    focus_color = st.selectbox("🎯 聚焦色號", ["全部顯示"] + [b['code'] for b in BEAD_LIBRARY])
 
-    tab1, tab2 = st.tabs(["🖼️ 專業圖紙", "📊 用量統計"])
+# 篩選後的色庫
+filtered_library = [b for b in BEAD_LIBRARY if b['code'][0] in selected_series]
 
-    with tab1:
-        px = 30 
-        output_img = Image.new("RGB", (bead_w * px, h_beads * px), (255, 255, 255))
-        draw = ImageDraw.Draw(output_img)
-        
-        active_counts = []
-        for y in range(h_beads):
-            for x in range(bead_w):
-                current_rgb = processed_small.getpixel((x, y))
-                matched = get_closest_bead(current_rgb, BEAD_LIBRARY)
-                
-                # 判斷是否為白色背景且需忽略
-                is_bg = ignore_white and matched['code'] in ["A01", "H01", "H02", "T01"] and sum(current_rgb) > 700
-                
-                # 聚焦與著色
-                fill_color = (matched['r'], matched['g'], matched['b'])
-                if focus_color != "全部顯示" and matched['code'] != focus_color:
-                    fill_color = (245, 245, 245) # 變淡
-                elif is_bg:
-                    fill_color = (255, 255, 255) # 背景純白
-                else:
-                    active_counts.append(matched['code'])
-
-                pos = [x*px, y*px, (x+1)*px, (y+1)*px]
-                draw.rectangle(pos, fill=fill_color, outline=(235, 235, 235))
-                
-                if show_symbols and not is_bg:
-                    if focus_color == "全部顯示" or matched['code'] == focus_color:
-                        brightness_val = sum(fill_color)
-                        t_col = (255, 255, 255) if brightness_val < 400 else (0, 0, 0)
-                        draw.text((x*px+2, y*px+8), matched['code'], fill=t_col)
-
-        if board_line:
-            for i in range(1, math.ceil(bead_w/29)):
-                draw.line([(i*29*px, 0), (i*29*px, h_beads*px)], fill="#FF4B4B", width=3)
-            for j in range(1, math.ceil(h_beads/29)):
-                draw.line([(0, j*29*px), (bead_w*px, j*29*px)], fill="#FF4B4B", width=3)
-
-        st.image(output_img, use_container_width=True)
-        buf = io.BytesIO()
-        output_img.save(buf, format="PNG")
-        st.download_button("💾 下載高清圖紙", buf.getvalue(), "pattern_pro_v2.png")
-
-    with tab2:
-        if active_counts:
-            df = pd.Series(active_counts).value_counts().reset_index()
-            df.columns = ['色號代碼', '所需顆數']
-            df['預覽'] = df['色號代碼'].apply(lambda c: f'#%02x%02x%02x' % tuple(next(b for b in BEAD_LIBRARY if b['code']==c).values())[1:4])
-            st.dataframe(df, use_container_width=True)
-            st.metric("總豆子數量 (扣除背景)", len(active_counts))
+if file and filtered_library:
+    input_img = Image.open(file).convert("RGB")
+    # 影像增強
+    input_img = ImageEnhance.Brightness(input_img).enhance(brightness)
+    input_img = ImageEnhance.Contrast(input_img).enhance(contrast)
+    
+    # 縮放與像素化
+    w_percent = (bead_w / float(input_img.size[0]))
+    h_beads = int((float(input_img.size[1]) * float(w_percent)))
+    img_small = input_img.resize((bead_w, h_beads), Image.Resampling.LANCZOS)
+    
+    # 介面分欄
+    tab1, tab2, tab3 = st.tabs(["🖼️ 圖紙預覽", "📋 購物清單", "
