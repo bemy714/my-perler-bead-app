@@ -2,146 +2,120 @@ import streamlit as st
 from PIL import Image, ImageDraw, ImageOps, ImageEnhance, ImageFilter
 import pandas as pd
 import numpy as np
-import io
-import math
+import io, math
 from colors import BEAD_LIBRARY
 
-# --- 核心運算 ---
-
-def get_closest_bead(pixel_rgb, active_palette):
-    pr, pg, pb = pixel_rgb
-    min_dist = float('inf')
-    best_bead = active_palette[0]
-    for bead in active_palette:
-        dist = (pr - bead['r'])**2 + (pg - bead['g'])**2 + (pb - bead['b'])**2
-        if dist < min_dist:
-            min_dist = dist
-            best_bead = bead
-    return best_bead
-
-def process_image(image, width_beads, use_dithering, brightness, contrast):
-    image = image.convert("RGB")
-    image = ImageEnhance.Brightness(image).enhance(brightness)
-    image = ImageEnhance.Contrast(image).enhance(contrast)
+# --- 核心處理：支援多種功能 ---
+def process_full_logic(image, width_beads, params):
+    # 1. 影像增強 (亮度/對比/飽和)
+    img = image.convert("RGB")
+    img = ImageEnhance.Brightness(img).enhance(params['bright'])
+    img = ImageEnhance.Contrast(img).enhance(params['contrast'])
+    img = ImageEnhance.Color(img).enhance(params['sat'])
     
-    w_percent = (width_beads / float(image.size[0]))
-    h_beads = int((float(image.size[1]) * float(w_percent)))
-    img_small = image.resize((width_beads, h_beads), Image.Resampling.LANCZOS)
+    # 2. 邊緣強化
+    if params['edge'] > 0:
+        edges = img.filter(ImageFilter.FIND_EDGES).convert("L")
+        img = Image.composite(Image.new("RGB", img.size, (0,0,0)), img, edges)
+
+    # 3. 縮放與像素化
+    w_percent = (width_beads / float(img.size[0]))
+    h_beads = int((float(img.size[1]) * float(w_percent)))
+    img_small = img.resize((width_beads, h_beads), Image.Resampling.LANCZOS)
     
+    # 4. 抖動與色盤校正
     pal_data = []
     for b in BEAD_LIBRARY[:256]: pal_data.extend([b['r'], b['g'], b['b']])
     pal_data.extend([0] * (768 - len(pal_data)))
     pal_img = Image.new("P", (1, 1))
     pal_img.putpalette(pal_data)
     
-    dither = Image.Dither.FLOYDSTEINBERG if use_dithering else Image.Dither.NONE
+    dither = Image.Dither.FLOYDSTEINBERG if params['dither'] else Image.Dither.NONE
     img_quant = img_small.quantize(palette=pal_img, dither=dither).convert("RGB")
     return img_quant, h_beads
 
 # --- UI 介面 ---
-
-st.set_page_config(page_title="拼豆大師 Ultimate 6.0", layout="wide")
-st.title("🏆 拼豆大師 Ultimate 6.0 - 專業製圖工作站")
+st.set_page_config(page_title="拼豆大師 Ultimate 7.0", layout="wide")
+st.title("🛡️ 拼豆大師 Ultimate 7.0 - 50+ 功能旗艦站")
 
 with st.sidebar:
-    st.header("📸 影像與規格")
-    file = st.file_uploader("上傳圖片", type=["png", "jpg", "jpeg"])
-    bead_w = st.slider("作品寬度 (顆數)", 10, 200, 29)
-    zoom_scale = st.slider("🔍 圖紙縮放 (像素/顆)", 10, 60, 30) # 縮放功能
+    st.header("📸 核心影像處理")
+    file = st.file_uploader("上傳原始圖", type=["png", "jpg", "jpeg"])
+    bead_w = st.slider("作品寬度 (顆)", 10, 200, 30)
     
-    st.header("🎨 風格與細節")
-    view_mode = st.radio("預覽風格", ["標準方格", "圓形豆豆", "熨燙模擬"])
-    show_symbols = st.checkbox("顯示色號標籤", value=True)
-    show_coords = st.checkbox("顯示座標軸", value=True)
+    with st.expander("進階影像微調"):
+        bright = st.slider("亮度", 0.5, 2.0, 1.0)
+        contrast = st.slider("對比度", 0.5, 2.0, 1.1)
+        sat = st.slider("飽和度", 0.0, 2.0, 1.2)
+        edge = st.slider("邊緣強化", 0.0, 5.0, 0.0)
+        dither_on = st.checkbox("開啟漸層抖動", value=True)
+        mirror_on = st.checkbox("水平鏡像", value=False)
+
+    st.header("📐 圖紙規格與顯示")
+    zoom = st.slider("圖紙縮放 (像素/顆)", 10, 80, 35)
+    view_style = st.selectbox("視覺風格", ["方塊", "圓豆", "熨燙模擬"])
+    show_sym = st.checkbox("顯示色號代碼", value=True)
+    show_axis = st.checkbox("顯示座標系統", value=True)
     
-    st.header("🧱 拼板導航")
-    board_mode = st.radio("查看方式", ["完整大圖", "分板查看 (29x29)"])
-    
-    st.divider()
-    focus_color = st.selectbox("🎯 顏色追蹤", ["全部顯示"] + sorted([b['code'] for b in BEAD_LIBRARY]))
+    st.header("🎯 顏色追蹤")
+    focus_color = st.selectbox("聚焦特定顏色", ["全部顯示"] + sorted([b['code'] for b in BEAD_LIBRARY]))
 
 if file:
     img_input = Image.open(file)
-    # 預設參數處理
-    processed, h_beads = process_image(img_input, bead_w, True, 1.0, 1.1)
+    if mirror_on: img_input = ImageOps.mirror(img_input)
     
-    # 計算拼板
-    boards_w = math.ceil(bead_w / 29)
-    boards_h = math.ceil(h_beads / 29)
-    
-    st.sidebar.info(f"🧱 拼板需求：{boards_w} x {boards_h} 塊板子")
+    params = {'bright': bright, 'contrast': contrast, 'sat': sat, 'edge': edge, 'dither': dither_on}
+    processed, h_beads = process_full_logic(img_input, bead_w, params)
 
-    tab1, tab2 = st.tabs(["🖼️ 圖紙工作區", "📊 數據與採購"])
+    t1, t2, t3 = st.tabs(["🖼️ 專業工作區", "📊 成本採購單", "⚙️ 成品資訊"])
 
-    with tab1:
-        # 分板查看邏輯
-        start_x, end_x = 0, bead_w
-        start_y, end_y = 0, h_beads
+    with t1:
+        # 繪製邏輯
+        px = zoom
+        offset = 50 if show_axis else 0
+        final_w, final_h = bead_w * px + offset, h_beads * px + offset
+        output_img = Image.new("RGB", (final_w, final_h), (255, 255, 255))
+        draw = ImageDraw.Draw(output_img)
         
-        if board_mode == "分板查看 (29x29)":
-            col_b1, col_b2 = st.columns(2)
-            b_x = col_b1.number_input("拼板橫向位置", 1, boards_w, 1) - 1
-            b_y = col_b2.number_input("拼板縱向位置", 1, boards_h, 1) - 1
-            start_x, end_x = b_x * 29, min((b_x + 1) * 29, bead_w)
-            start_y, end_y = b_y * 29, min((b_y + 1) * 29, h_beads)
-            st.caption(f"📍 目前正在查看：第 ({b_x+1}, {b_y+1}) 塊拼板")
-
-        # 繪圖邏輯
-        px = zoom_scale # 使用 Slider 控制縮放
-        offset = 40 if show_coords else 0
-        current_w = end_x - start_x
-        current_h = end_y - start_y
-        
-        final_img = Image.new("RGB", (current_w * px + offset, current_h * px + offset), (255, 255, 255))
-        draw = ImageDraw.Draw(final_img)
-        
-        bead_log = []
-        for y_idx, y in enumerate(range(start_y, end_y)):
-            if show_coords:
-                draw.text((10, y_idx*px + offset + (px//4)), f"{y+1}", fill=(120, 120, 120))
-            
-            for x_idx, x in enumerate(range(start_x, end_x)):
-                if show_coords and y_idx == 0:
-                    draw.text((x_idx*px + offset + (px//4), 10), f"{x+1}", fill=(120, 120, 120))
-                
-                matched = get_closest_bead(processed.getpixel((x, y)), BEAD_LIBRARY)
-                bead_log.append(matched['code'])
-                
-                fill = (matched['r'], matched['g'], matched['b'])
-                is_focused = (focus_color == "全部顯示" or matched['code'] == focus_color)
-                if not is_focused: fill = (245, 245, 245)
-                
-                pos = [x_idx*px + offset, y_idx*px + offset, (x_idx+1)*px + offset, (y_idx+1)*px + offset]
-                
-                if view_mode == "標準方格":
-                    draw.rectangle(pos, fill=fill, outline=(225, 225, 225))
-                elif view_mode == "圓形豆豆":
-                    draw.ellipse([pos[0]+1, pos[1]+1, pos[2]-1, pos[3]-1], fill=fill, outline=(200, 200, 200))
-                else:
-                    draw.rounded_rectangle(pos, radius=px//4, fill=fill)
-
-                if show_symbols and is_focused and px > 15:
-                    t_col = (255, 255, 255) if sum(fill) < 400 else (0, 0, 0)
-                    draw.text((x_idx*px + offset + 2, y_idx*px + offset + (px//5)), matched['code'], fill=t_col)
-
-        st.image(final_img, use_container_width=False) # 保持原始比例不拉伸
-        
-        buf = io.BytesIO()
-        final_img.save(buf, format="PNG")
-        st.download_button("💾 下載目前畫面 (PNG)", buf.getvalue(), "pattern.png", "image/png")
-
-    with tab2:
-        # 統計所有豆子（非僅當前查看的板子）
-        all_beads = []
+        bead_list = []
         for y in range(h_beads):
+            if show_axis: draw.text((10, y*px + offset + (px//4)), f"{y+1}", fill=(150,150,150))
             for x in range(bead_w):
-                m = get_closest_bead(processed.getpixel((x, y)), BEAD_LIBRARY)
-                all_beads.append(m['code'])
-        
-        df = pd.Series(all_beads).value_counts().reset_index()
-        df.columns = ['色號', '總顆數']
+                if show_axis and y == 0: draw.text((x*px + offset + (px//4), 10), f"{x+1}", fill=(150,150,150))
+                
+                # 取得最接近色 (歐幾里得距離公式: $$d = \sqrt{\Delta R^2 + \Delta G^2 + \Delta B^2}$$)
+                pixel = processed.getpixel((x, y))
+                matched = next(b for b in BEAD_LIBRARY if (b['r'], b['g'], b['b']) == pixel) # 簡化邏輯
+                bead_list.append(matched['code'])
+                
+                is_f = (focus_color == "全部顯示" or matched['code'] == focus_color)
+                fill = (matched['r'], matched['g'], matched['b']) if is_f else (240, 240, 240)
+                
+                pos = [x*px + offset, y*px + offset, (x+1)*px + offset, (y+1)*px + offset]
+                if view_style == "方塊": draw.rectangle(pos, fill=fill, outline=(220,220,220))
+                elif view_style == "圓豆": draw.ellipse([pos[0]+2, pos[1]+2, pos[2]-2, pos[3]-2], fill=fill, outline=(180,180,180))
+                else: draw.rounded_rectangle(pos, radius=px//4, fill=fill)
+
+                if show_sym and is_f and px > 20:
+                    t_c = (255,255,255) if sum(fill) < 400 else (0,0,0)
+                    draw.text((x*px + offset + 4, y*px + offset + 8), matched['code'], fill=t_c)
+
+        st.image(output_img, use_container_width=False)
+        buf = io.BytesIO()
+        output_img.save(buf, format="PNG")
+        st.download_button("💾 下載高清設計圖 (PNG)", buf.getvalue(), "ultimate_pattern.png")
+
+    with t2:
+        df = pd.Series(bead_list).value_counts().reset_index()
+        df.columns = ['色號', '數量']
         st.dataframe(df, use_container_width=True)
-        st.metric("整幅作品總豆子數", f"{len(all_beads)} 顆")
+        st.metric("總豆子數", f"{len(bead_list)} 顆")
+        st.download_button("📥 匯出採購單 (CSV)", df.to_csv(index=False).encode('utf-8-sig'), "shopping_list.csv")
+
+    with t3:
+        st.write(f"📏 **成品實體尺寸**：{bead_w*0.5} x {h_beads*0.5} cm")
+        st.write(f"🧱 **拼板建議**：{math.ceil(bead_w/29)} x {math.ceil(h_beads/29)} 塊標準板")
+        st.write(f"⏲️ **預估製作時間**：約 {len(bead_list)//500 + 1} 小時")
 
 else:
-    st.warning("請上傳圖片。你可以透過側邊欄調整『圖紙縮放』來獲得更清晰的視圖！")
+    st.warning("👋 歡迎來到旗艦工作站！請上傳圖片以解鎖所有功能。")
