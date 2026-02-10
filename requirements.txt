@@ -2,5 +2,5 @@ streamlit
 Pillow
 pandas
 numpy
-openai
 requests
+openai
